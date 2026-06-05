@@ -64,7 +64,12 @@ _ARXIV_RE = re.compile(r"arXiv:(\d{4}\.\d{4,5})", re.IGNORECASE)
 _TOOLS: list[types.Tool] = [
     types.Tool(
         name="create_collection",
-        description="Create a new top-level Zotero collection and return its unique key.",
+        description=(
+            "Check whether a top-level Zotero collection with the given name already exists. "
+            "If it does, returns JSON with 'status': 'exists' and the existing 'key' and 'name' — "
+            "prompt the user whether to append to it or create a new collection. "
+            "If it does not exist, creates it and returns 'status': 'created' with the new 'key'."
+        ),
         inputSchema={
             "type": "object",
             "properties": {
@@ -102,7 +107,10 @@ _TOOLS: list[types.Tool] = [
         name="add_item_by_doi",
         description=(
             "Resolve a DOI via Semantic Scholar, create the corresponding Zotero item, "
-            "and place it in the specified collection."
+            "and place it in the specified collection. Before inserting, checks whether "
+            "an item with the same DOI already exists in the collection. If a duplicate "
+            "is found, returns JSON with 'status': 'duplicate' and the existing 'item_key' "
+            "instead of creating a second copy."
         ),
         inputSchema={
             "type": "object",
@@ -265,6 +273,21 @@ def _build_item_template(paper: dict, doi: str) -> dict:
 
 
 async def _create_collection(name: str) -> list[types.TextContent]:
+    # Check whether a collection with this name already exists.
+    try:
+        existing = zot.collections()
+    except Exception as exc:
+        return [types.TextContent(type="text", text=f"Zotero API error fetching collections: {exc}")]
+
+    name_lower = name.strip().lower()
+    for coll in existing:
+        if coll["data"]["name"].strip().lower() == name_lower:
+            payload = json.dumps(
+                {"status": "exists", "key": coll["key"], "name": coll["data"]["name"]}
+            )
+            return [types.TextContent(type="text", text=payload)]
+
+    # Collection does not exist — create it.
     try:
         result = zot.create_collections([{"name": name, "parentCollection": ""}])
     except Exception as exc:
@@ -280,12 +303,25 @@ async def _create_collection(name: str) -> list[types.TextContent]:
             )
         ]
 
-    key: str = item["key"]
-    return [types.TextContent(type="text", text=key)]
+    payload = json.dumps({"status": "created", "key": item["key"], "name": name})
+    return [types.TextContent(type="text", text=payload)]
 
 
 async def _add_item_by_doi(doi: str, collection_key: str) -> list[types.TextContent]:
-    # 1. Resolve DOI via Semantic Scholar (pyzotero built-in wrapper).
+    # 1. Check for a duplicate — scan existing collection items for a matching DOI.
+    try:
+        all_items = zot.everything(zot.collection_items(collection_key))
+        doi_lower = doi.strip().lower()
+        for existing in all_items:
+            if existing["data"].get("DOI", "").strip().lower() == doi_lower:
+                payload = json.dumps(
+                    {"status": "duplicate", "item_key": existing["key"], "doi": doi}
+                )
+                return [types.TextContent(type="text", text=payload)]
+    except Exception as exc:
+        return [types.TextContent(type="text", text=f"Zotero API error checking duplicates: {exc}")]
+
+    # 2. Resolve DOI via Semantic Scholar (pyzotero built-in wrapper).
     try:
         paper = get_paper(doi, id_type="doi")
     except PaperNotFoundError:
@@ -344,12 +380,10 @@ async def _add_item_by_doi(doi: str, collection_key: str) -> list[types.TextCont
             )
         ]
 
-    return [
-        types.TextContent(
-            type="text",
-            text=f"Item '{item_key}' added to collection '{collection_key}'.",
-        )
-    ]
+    payload = json.dumps(
+        {"status": "added", "item_key": item_key, "collection_key": collection_key}
+    )
+    return [types.TextContent(type="text", text=payload)]
 
 
 async def _get_drive_folder_id() -> list[types.TextContent]:

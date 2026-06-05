@@ -1,0 +1,12 @@
+name: zotero-organizer
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pypdf=6.12.2
+  - pip
+  - pip:
+      - mcp==1.27.2
+      - pyzotero==1.13.0
+      - python-dotenv==1.2.2

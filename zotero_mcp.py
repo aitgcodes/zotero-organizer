@@ -433,10 +433,12 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         ]
 
     file_name = os.path.basename(file_path)
+    local_dir = os.path.basename(os.path.dirname(os.path.abspath(file_path)))
+    dest = f"{rclone_remote}:{local_dir}"
     root_flag = f"--drive-root-folder-id={DRIVE_FOLDER_ID}"
 
     upload = await asyncio.create_subprocess_exec(
-        RCLONE_BIN, "copy", file_path, f"{rclone_remote}:",
+        RCLONE_BIN, "copy", file_path, dest,
         root_flag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -446,7 +448,7 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=f"rclone copy failed: {stderr.decode().strip()}")]
 
     link_proc = await asyncio.create_subprocess_exec(
-        RCLONE_BIN, "link", f"{rclone_remote}:{file_name}",
+        RCLONE_BIN, "link", f"{dest}/{file_name}",
         root_flag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -456,7 +458,7 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=f"rclone link failed: {stderr.decode().strip()}")]
 
     url = stdout.decode().strip()
-    payload = json.dumps({"url": url, "name": file_name})
+    payload = json.dumps({"url": url, "name": file_name, "subfolder": local_dir})
     return [types.TextContent(type="text", text=payload)]
 
 

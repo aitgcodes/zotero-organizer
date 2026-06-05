@@ -5,6 +5,11 @@ import asyncio
 import json
 import os
 import re
+import shutil
+
+from dotenv import load_dotenv
+
+load_dotenv()  # loads .env if present; does not override vars already in the environment
 
 import mcp.types as types
 import pypdf
@@ -43,6 +48,11 @@ zot = _init_zotero()
 server = Server("zotero-organize")
 
 DRIVE_FOLDER_ID: str = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
+RCLONE_BIN: str = (
+    os.environ.get("RCLONE_PATH")
+    or shutil.which("rclone")
+    or "/opt/homebrew/bin/rclone"
+)
 
 _DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
 
@@ -376,12 +386,19 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         return [types.TextContent(type="text", text="GOOGLE_DRIVE_FOLDER_ID is not set.")]
     if not os.path.isfile(file_path):
         return [types.TextContent(type="text", text=f"File not found: '{file_path}'")]
+    if not os.path.isfile(RCLONE_BIN):
+        return [
+            types.TextContent(
+                type="text",
+                text=f"rclone not found at '{RCLONE_BIN}'. Install it or set RCLONE_PATH.",
+            )
+        ]
 
     file_name = os.path.basename(file_path)
     root_flag = f"--drive-root-folder-id={DRIVE_FOLDER_ID}"
 
     upload = await asyncio.create_subprocess_exec(
-        "rclone", "copy", file_path, f"{rclone_remote}:",
+        RCLONE_BIN, "copy", file_path, f"{rclone_remote}:",
         root_flag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -391,7 +408,7 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=f"rclone copy failed: {stderr.decode().strip()}")]
 
     link_proc = await asyncio.create_subprocess_exec(
-        "rclone", "link", f"{rclone_remote}:{file_name}",
+        RCLONE_BIN, "link", f"{rclone_remote}:{file_name}",
         root_flag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

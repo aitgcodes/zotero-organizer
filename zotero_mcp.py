@@ -55,6 +55,7 @@ RCLONE_BIN: str = (
 )
 
 _DOI_RE = re.compile(r"10\.\d{4,9}/[-._;()/:A-Z0-9]+", re.IGNORECASE)
+_ARXIV_RE = re.compile(r"arXiv:(\d{4}\.\d{4,5})", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Tool definitions
@@ -77,11 +78,14 @@ _TOOLS: list[types.Tool] = [
         description=(
             "Extract a DOI from a local PDF file by checking its internal metadata "
             "first, then scanning the first page only. Never reads beyond page 1. "
-            "If a DOI is not found via regex, performs a Semantic Scholar title search "
+            "If an arXiv ID (e.g. 'arXiv:2301.00001') is found in the metadata or "
+            "first page, returns the canonical arXiv DOI (10.48550/arXiv.XXXX.XXXXX) "
+            "directly without searching for a published version. "
+            "If no DOI or arXiv ID is found, performs a Semantic Scholar title search "
             "using the first-page text and returns the DOI of the top match. "
-            "If that also fails, returns the first page's text header as "
-            "'fallback_header_text', which Claude can use to identify the Title "
-            "and Abstract for a web metadata search."
+            "If all methods fail, returns JSON with 'status': 'unresolved', "
+            "'file_path', and 'fallback_header_text'. Collect all unresolved files "
+            "and report them to the user at the end of a batch run."
         ),
         inputSchema={
             "type": "object",
@@ -451,6 +455,9 @@ async def _extract_doi_from_local_pdf(file_path: str) -> list[types.TextContent]
         match = _DOI_RE.search(raw)
         if match:
             return [types.TextContent(type="text", text=match.group(0))]
+        arxiv = _ARXIV_RE.search(raw)
+        if arxiv:
+            return [types.TextContent(type="text", text=f"10.48550/arXiv.{arxiv.group(1)}")]
 
     # 2. Fall back to first page text only — no subsequent pages are read.
     if not reader.pages:
@@ -464,6 +471,10 @@ async def _extract_doi_from_local_pdf(file_path: str) -> list[types.TextContent]
     match = _DOI_RE.search(first_page_text)
     if match:
         return [types.TextContent(type="text", text=match.group(0))]
+
+    arxiv = _ARXIV_RE.search(first_page_text)
+    if arxiv:
+        return [types.TextContent(type="text", text=f"10.48550/arXiv.{arxiv.group(1)}")]
 
     # 3. No DOI on page 1 — attempt a Semantic Scholar title search.
     # Collapse newlines so the query reads as a natural phrase, then trim to
@@ -481,7 +492,10 @@ async def _extract_doi_from_local_pdf(file_path: str) -> list[types.TextContent]
     # 4. Last resort — return the first 2,000 characters of page 1 so Claude
     # can identify the title and abstract for a downstream metadata search.
     header_snippet = first_page_text[:2000].strip()
-    payload = json.dumps({"fallback_header_text": header_snippet}, ensure_ascii=False)
+    payload = json.dumps(
+        {"status": "unresolved", "file_path": file_path, "fallback_header_text": header_snippet},
+        ensure_ascii=False,
+    )
     return [types.TextContent(type="text", text=payload)]
 
 

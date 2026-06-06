@@ -65,7 +65,8 @@ _TOOLS: list[types.Tool] = [
     types.Tool(
         name="create_collection",
         description=(
-            "Check whether a top-level Zotero collection with the given name already exists. "
+            "Check whether a Zotero collection with the given name already exists "
+            "(scoped to the parent collection when parent_key is supplied, otherwise top-level). "
             "If it does, returns JSON with 'status': 'exists' and the existing 'key' and 'name' — "
             "prompt the user whether to append to it or create a new collection. "
             "If it does not exist, creates it and returns 'status': 'created' with the new 'key'."
@@ -74,6 +75,10 @@ _TOOLS: list[types.Tool] = [
             "type": "object",
             "properties": {
                 "name": {"type": "string", "description": "Display name for the collection."},
+                "parent_key": {
+                    "type": "string",
+                    "description": "Key of the parent collection. If omitted, a top-level collection is created.",
+                },
             },
             "required": ["name"],
         },
@@ -150,6 +155,17 @@ _TOOLS: list[types.Tool] = [
                     "type": "string",
                     "description": "Absolute or relative path to the local PDF file.",
                 },
+                "collection_path": {
+                    "type": "string",
+                    "description": (
+                        "Preferred: slash-separated Drive subfolder path relative to "
+                        "GOOGLE_DRIVE_FOLDER_ID (e.g. 'Plasmons/Hot-Carriers' or "
+                        "'Plasmons/Quantum-Plasmonics/Hydrodynamic-Modeling'). Each level "
+                        "maps to a Drive sub-folder; rclone creates intermediate folders "
+                        "automatically. If omitted, falls back to the local parent directory "
+                        "name of the file."
+                    ),
+                },
             },
             "required": ["file_path"],
         },
@@ -179,6 +195,42 @@ _TOOLS: list[types.Tool] = [
             "required": ["item_key", "url", "title"],
         },
     ),
+    types.Tool(
+        name="get_collection_structure",
+        description=(
+            "Fetches all existing sub-collections and items within a target folder key "
+            "to inspect its current layout."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "collection_key": {
+                    "type": "string",
+                    "description": "Key of the Zotero collection to inspect.",
+                },
+            },
+            "required": ["collection_key"],
+        },
+    ),
+    types.Tool(
+        name="add_tags_to_item",
+        description="Appends a list of verified tags to an existing Zotero library item.",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "item_key": {
+                    "type": "string",
+                    "description": "Key of the target Zotero item.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of tag strings to append.",
+                },
+            },
+            "required": ["item_key", "tags"],
+        },
+    ),
 ]
 
 
@@ -199,7 +251,7 @@ async def handle_call_tool(
     args = arguments or {}
     try:
         if name == "create_collection":
-            return await _create_collection(args["name"])
+            return await _create_collection(args["name"], args.get("parent_key", ""))
         if name == "extract_doi_from_local_pdf":
             return await _extract_doi_from_local_pdf(args["file_path"])
         if name == "get_drive_folder_id":
@@ -207,11 +259,15 @@ async def handle_call_tool(
         if name == "add_item_by_doi":
             return await _add_item_by_doi(args["doi"], args["collection_key"])
         if name == "upload_pdf_to_drive":
-            return await _upload_pdf_to_drive(args["file_path"])
+            return await _upload_pdf_to_drive(args["file_path"], args.get("collection_path", ""))
         if name == "add_url_attachment":
             return await _add_url_attachment(
                 args["item_key"], args["url"], args["title"]
             )
+        if name == "get_collection_structure":
+            return await _get_collection_structure(args["collection_key"])
+        if name == "add_tags_to_item":
+            return await _add_tags_to_item(args["item_key"], args["tags"])
         return [types.TextContent(type="text", text=f"Unknown tool: {name!r}")]
     except KeyError as exc:
         return [types.TextContent(type="text", text=f"Missing required argument: {exc}")]
@@ -272,15 +328,15 @@ def _build_item_template(paper: dict, doi: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def _create_collection(name: str) -> list[types.TextContent]:
-    # Check whether a collection with this name already exists.
+async def _create_collection(name: str, parent_key: str = "") -> list[types.TextContent]:
+    # Check whether a collection with this name already exists within the target scope.
     try:
-        existing = zot.collections()
+        candidates = zot.collections_sub(parent_key) if parent_key else zot.collections()
     except Exception as exc:
         return [types.TextContent(type="text", text=f"Zotero API error fetching collections: {exc}")]
 
     name_lower = name.strip().lower()
-    for coll in existing:
+    for coll in candidates:
         if coll["data"]["name"].strip().lower() == name_lower:
             payload = json.dumps(
                 {"status": "exists", "key": coll["key"], "name": coll["data"]["name"]}
@@ -288,8 +344,9 @@ async def _create_collection(name: str) -> list[types.TextContent]:
             return [types.TextContent(type="text", text=payload)]
 
     # Collection does not exist — create it.
+    coll_payload = {"name": name, "parentCollection": parent_key} if parent_key else {"name": name, "parentCollection": ""}
     try:
-        result = zot.create_collections([{"name": name, "parentCollection": ""}])
+        result = zot.create_collections([coll_payload])
     except Exception as exc:
         return [types.TextContent(type="text", text=f"Zotero API error: {exc}")]
 
@@ -416,7 +473,7 @@ async def _add_url_attachment(
     ]
 
 
-async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
+async def _upload_pdf_to_drive(file_path: str, collection_path: str = "") -> list[types.TextContent]:
     rclone_remote = os.environ.get("RCLONE_REMOTE")
     if not rclone_remote:
         return [types.TextContent(type="text", text="RCLONE_REMOTE is not set (e.g. 'gdrive').")]
@@ -433,8 +490,11 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         ]
 
     file_name = os.path.basename(file_path)
-    local_dir = os.path.basename(os.path.dirname(os.path.abspath(file_path)))
-    dest = f"{rclone_remote}:{local_dir}"
+    if collection_path.strip():
+        subfolder = collection_path.strip("/")
+    else:
+        subfolder = os.path.basename(os.path.dirname(os.path.abspath(file_path)))
+    dest = f"{rclone_remote}:{subfolder}"
     root_flag = f"--drive-root-folder-id={DRIVE_FOLDER_ID}"
 
     upload = await asyncio.create_subprocess_exec(
@@ -458,7 +518,7 @@ async def _upload_pdf_to_drive(file_path: str) -> list[types.TextContent]:
         return [types.TextContent(type="text", text=f"rclone link failed: {stderr.decode().strip()}")]
 
     url = stdout.decode().strip()
-    payload = json.dumps({"url": url, "name": file_name, "subfolder": local_dir})
+    payload = json.dumps({"url": url, "name": file_name, "subfolder": subfolder})
     return [types.TextContent(type="text", text=payload)]
 
 
@@ -533,6 +593,50 @@ async def _extract_doi_from_local_pdf(file_path: str) -> list[types.TextContent]
         ensure_ascii=False,
     )
     return [types.TextContent(type="text", text=payload)]
+
+
+async def _get_collection_structure(collection_key: str) -> list[types.TextContent]:
+    try:
+        sub_colls = zot.collections_sub(collection_key)
+        items = zot.everything(zot.collection_items(collection_key))
+    except Exception as exc:
+        return [types.TextContent(type="text", text=f"Zotero API error: {exc}")]
+
+    structure = {
+        "collection_key": collection_key,
+        "sub_collections": [
+            {"key": c["key"], "name": c["data"]["name"]} for c in sub_colls
+        ],
+        "items": [
+            {
+                "key": i["key"],
+                "title": i["data"].get("title", ""),
+                "tags": [t["tag"] for t in i["data"].get("tags", [])],
+            }
+            for i in items
+        ],
+    }
+    return [types.TextContent(type="text", text=json.dumps(structure, ensure_ascii=False))]
+
+
+async def _add_tags_to_item(item_key: str, tags: list[str]) -> list[types.TextContent]:
+    try:
+        item = zot.item(item_key)
+        existing = {t["tag"] for t in item["data"].get("tags", [])}
+        new_tags = [{"tag": t} for t in tags if t not in existing]
+        item["data"]["tags"].extend(new_tags)
+        zot.update_item(item)
+    except Exception as exc:
+        return [types.TextContent(type="text", text=f"Failed to update tags: {exc}")]
+    return [
+        types.TextContent(
+            type="text",
+            text=json.dumps(
+                {"status": "updated", "item_key": item_key, "tags_added": [t["tag"] for t in new_tags]},
+                ensure_ascii=False,
+            ),
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------

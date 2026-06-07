@@ -36,6 +36,7 @@ COLL_DRIVE_PATH = {coll_drive_path!r}
 
 CONCURRENCY = 5
 SS_DELAY    = 0.35
+DRY_RUN     = False  # set by --dry-run flag at runtime
 
 zot    = zotero.Zotero(os.environ["ZOTERO_USER_ID"], "user", os.environ["ZOTERO_API_KEY"])
 sem    = asyncio.Semaphore(CONCURRENCY)
@@ -57,6 +58,10 @@ STATE = _load_state()
 
 # ── Collection helpers ─────────────────────────────────────────────────────────
 def create_or_get(name, parent_key=""):
+    if DRY_RUN:
+        print(f"  [DRY] collection: {{name}}")
+        STATE["collections"][name] = f"DRY_{{name}}"
+        return STATE["collections"][name]
     if name in STATE["collections"]:
         return STATE["collections"][name]
     candidates = zot.collections_sub(parent_key) if parent_key else zot.collections()
@@ -80,6 +85,9 @@ def create_or_get(name, parent_key=""):
 
 # ── Async Drive upload ─────────────────────────────────────────────────────────
 async def drive_upload(abs_path, subfolder):
+    if DRY_RUN:
+        print(f"  [DRY] rclone copy {{os.path.basename(abs_path)}} → {{subfolder}}/")
+        return f"https://drive.google.com/dry-run/{{os.path.basename(abs_path)}}"
     dest      = f"{{RCLONE_REMOTE}}:{{subfolder}}"
     root_flag = f"--drive-root-folder-id={{DRIVE_FOLDER_ID}}"
     fname     = os.path.basename(abs_path)
@@ -105,6 +113,8 @@ async def drive_upload(abs_path, subfolder):
 
 # ── Semantic Scholar ───────────────────────────────────────────────────────────
 async def ss_lookup(doi, fallback_title=""):
+    if DRY_RUN:
+        return _stub_template(doi, fallback_title)
     async with ss_sem:
         await asyncio.sleep(SS_DELAY)
         loop = asyncio.get_event_loop()
@@ -163,6 +173,10 @@ def _extract_first(result):
 
 # ── Async Zotero writes ────────────────────────────────────────────────────────
 async def zot_create(template, coll_key):
+    if DRY_RUN:
+        label = template.get("title") or template.get("DOI") or "?"
+        print(f"  [DRY] zotero create: {{label[:60]}}")
+        return "DRY_KEY", "dry-run"
     loop  = asyncio.get_event_loop()
     doi_l = template.get("DOI", "").strip().lower()
     if doi_l:
@@ -178,6 +192,8 @@ async def zot_create(template, coll_key):
     return item["key"], "created"
 
 async def zot_find_by_doi(doi):
+    if DRY_RUN:
+        return "DRY_KEY"
     loop  = asyncio.get_event_loop()
     doi_l = doi.strip().lower()
     items = await loop.run_in_executor(None, lambda: zot.everything(zot.items(q=doi)))
@@ -187,12 +203,16 @@ async def zot_find_by_doi(doi):
     return None
 
 async def zot_attach_url(item_key, url, fname):
+    if DRY_RUN:
+        return
     loop = asyncio.get_event_loop()
     att  = zot.item_template("attachment", "linked_url")
     att["title"] = fname; att["url"] = url; att["parentItem"] = item_key
     await loop.run_in_executor(None, lambda: zot.create_items([att]))
 
 async def zot_tag(item_key, tags):
+    if DRY_RUN:
+        return
     loop = asyncio.get_event_loop()
     item = await loop.run_in_executor(None, lambda: zot.item(item_key))
     existing = {{t["tag"] for t in item["data"].get("tags", [])}}
@@ -356,7 +376,11 @@ COLLECTION_ORDER = {collection_order!r}
 # ── Main ───────────────────────────────────────────────────────────────────────
 BASE_COLLECTION = {collection_name!r}
 
-async def main(drive_only=False):
+async def main(drive_only=False, dry_run=False):
+    global DRY_RUN
+    DRY_RUN = dry_run
+    if DRY_RUN:
+        print("=== DRY RUN — no Zotero or Drive changes will be made ===")
     t0 = time.monotonic()
     if not drive_only:
         print("\\n=== STEP 1: Collections ===")
@@ -392,6 +416,8 @@ async def main(drive_only=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["full", "drive-only"], default="full")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print what would happen without touching Zotero or Drive")
     a = parser.parse_args()
-    asyncio.run(main(drive_only=(a.mode == "drive-only")))
+    asyncio.run(main(drive_only=(a.mode == "drive-only"), dry_run=a.dry_run))
 '''

@@ -276,8 +276,8 @@ def run_generate(scan: dict, taxonomy: dict | None, output: Path, mode: str):
     print(f"Batch script written → {output}")
     print(f"  {len(papers)} papers  |  {len(flagged)} flagged  |  {len(books)} books/notes")
     print(f"\nRun with:")
-    print(f"  conda run -n claudotero python {output}")
-    print(f"  conda run -n claudotero python {output} --mode drive-only")
+    print(f"  python {output}")
+    print(f"  python {output} --mode drive-only")
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +303,7 @@ def main():
         if len(args.inputs) != 1:
             sys.exit("auto mode requires exactly one argument: <scan.json>")
         scan = load_scan(args.inputs[0])
-        out  = Path(args.output) if args.output else Path(f"/tmp/{scan['collection_name']}_batch.py")
+        out  = Path(args.output) if args.output else Path(args.inputs[0]).parent / "batch_run.py"
         run_generate(scan, None, out, "auto")
 
     elif args.mode == "taxonomy":
@@ -311,7 +311,7 @@ def main():
             sys.exit("taxonomy mode requires two arguments: <taxonomy.yaml> <scan.json>")
         taxonomy = load_taxonomy(args.inputs[0])
         scan     = load_scan(args.inputs[1])
-        out      = Path(args.output) if args.output else Path(f"/tmp/{scan['collection_name']}_batch.py")
+        out      = Path(args.output) if args.output else Path(args.inputs[1]).parent / "batch_run.py"
         run_generate(scan, taxonomy, out, "taxonomy")
 
 

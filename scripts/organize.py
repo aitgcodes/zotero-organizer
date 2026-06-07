@@ -67,10 +67,10 @@ def main():
     if not collection:
         sys.exit("Error: collection name required.")
 
-    scan_json    = folder / "scan.json"
+    scan_json     = folder / "scan.json"
     taxonomy_yaml = folder / "taxonomy.yaml"
-    batch_py     = Path(f"/tmp/{collection}_batch.py")
-    state_file   = Path(f"/tmp/{collection}_batch_state.json")
+    batch_py      = folder / "batch_run.py"
+    state_file    = Path(f"/tmp/{collection}_batch_state.json")
 
     # ── Stage 1: Scan ─────────────────────────────────────────────────────────
     if args.skip_scan:

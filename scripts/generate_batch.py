@@ -257,7 +257,7 @@ def render_batch(
 def run_generate(scan: dict, taxonomy: dict | None, output: Path, mode: str):
     base           = scan["base"]
     collection_name = scan["collection_name"]
-    state_file     = f"/tmp/{collection_name}_batch_state.json"
+    state_file     = str(output.parent / "state.json")
     scan_path      = str(output.parent / "scan.json")  # best-effort
 
     if mode == "auto":
@@ -296,7 +296,7 @@ def main():
         if len(args.inputs) != 1:
             sys.exit("scaffold mode requires exactly one argument: <scan.json>")
         scan = load_scan(args.inputs[0])
-        out  = Path(args.output) if args.output else Path(scan["base"]) / "taxonomy.yaml"
+        out  = Path(args.output) if args.output else Path(args.inputs[0]).parent / "taxonomy.yaml"
         run_scaffold(scan, out)
 
     elif args.mode == "auto":

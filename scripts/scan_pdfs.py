@@ -8,7 +8,7 @@ Walks a folder, extracts DOIs via the same 4-step chain used by zotero_mcp.py:
   3. Semantic Scholar title search (skipped with --no-ss)
   4. Unresolved — stores fallback header for manual review
 
-Writes scan.json and optionally invokes generate_batch.py in scaffold/auto mode.
+Writes scan.json. Can also be imported by organize.py for incremental scanning.
 
 Usage:
   python scripts/scan_pdfs.py <folder> --collection <Name> [--output <path>] [--no-ss]
@@ -101,6 +101,91 @@ def extract_doi(pdf_path: str, use_ss: bool) -> dict:
     return result
 
 
+def walk_pdfs(base: Path) -> list[str]:
+    """Return sorted relative paths of all PDFs under base."""
+    rel_files = []
+    for root, _dirs, files in os.walk(base):
+        for fname in sorted(files):
+            if fname.lower().endswith(".pdf"):
+                rel = str(Path(root, fname).relative_to(base))
+                rel_files.append(rel)
+    return rel_files
+
+
+def _scan_files(base: Path, rel_files: list[str], use_ss: bool,
+                offset: int = 0, total: int | None = None) -> dict[str, dict]:
+    """Extract DOI info for a list of relative paths. Returns papers dict."""
+    papers = {}
+    n = total or len(rel_files)
+    for i, rel in enumerate(rel_files, offset + 1):
+        abs_path = str(base / rel)
+        _parts = Path(rel).parts
+        parent_dir = str(Path(*_parts[:-1])) if len(_parts) > 1 else "."
+        print(f"  [{i:>3}/{n}] {rel[:70]}", end="", flush=True)
+        info = extract_doi(abs_path, use_ss)
+        papers[rel] = {
+            "doi":              info["doi"],
+            "doi_source":       info["doi_source"],
+            "title":            info["title"],
+            "abstract_snippet": info["abstract_snippet"],
+            "fallback_header":  info["fallback_header"],
+            "parent_dir":       parent_dir,
+            "duplicate_of":     None,
+        }
+        print(f"  [{info['doi_source'] or '?'}]")
+    return papers
+
+
+def _detect_duplicates(papers: dict[str, dict]) -> None:
+    """Mark duplicates in-place. Keeps the most-nested copy (deepest path wins)."""
+    doi_groups: dict[str, list[str]] = {}
+    for rel, p in papers.items():
+        doi = (p["doi"] or "").lower()
+        if doi:
+            doi_groups.setdefault(doi, []).append(rel)
+    for doi, rels in doi_groups.items():
+        if len(rels) == 1:
+            continue
+        canonical = max(rels, key=lambda r: (len(Path(r).parts), r))
+        for rel in rels:
+            if rel != canonical:
+                papers[rel]["duplicate_of"] = canonical
+                print(f"  DUPLICATE: {rel}  (kept deeper: {canonical})")
+
+
+def incremental_scan(base: Path, existing: dict, use_ss: bool) -> tuple[dict, list[str], list[str]]:
+    """
+    Diff the PDF folder against an existing scan dict.
+
+    Returns:
+        (updated_scan, added_rels, removed_rels)
+    added_rels  — files in folder but not in existing scan
+    removed_rels — files in existing scan but no longer on disk (flagged, not deleted)
+    """
+    known   = set(existing["papers"].keys())
+    current = set(walk_pdfs(base))
+    added   = sorted(current - known)
+    removed = sorted(known - current)
+
+    papers = dict(existing["papers"])
+
+    for rel in removed:
+        papers[rel]["removed"] = True
+        print(f"  REMOVED: {rel}")
+
+    if added:
+        print(f"Scanning {len(added)} new file(s)...")
+        if use_ss:
+            print(f"  Semantic Scholar title-search enabled (throttled at {SS_DELAY}s/call).")
+        new_papers = _scan_files(base, added, use_ss,
+                                 offset=len(known), total=len(known) + len(added))
+        papers.update(new_papers)
+        _detect_duplicates(papers)
+
+    updated = {**existing, "papers": papers}
+    return updated, added, removed
+
+
 def detect_subdirs(base: Path, rel_files: list[str]) -> list[str]:
     """Return unique immediate subdirectory names that contain PDFs."""
     subdirs = set()
@@ -146,14 +231,7 @@ def main():
     output_path = Path(args.output) if args.output else base / "scan.json"
     use_ss = not args.no_ss
 
-    # Collect all PDF paths
-    rel_files = []
-    for root, _dirs, files in os.walk(base):
-        for fname in sorted(files):
-            if fname.lower().endswith(".pdf"):
-                rel = str(Path(root, fname).relative_to(base))
-                rel_files.append(rel)
-
+    rel_files = walk_pdfs(base)
     if not rel_files:
         sys.exit(f"No PDF files found in '{base}'.")
 
@@ -163,39 +241,8 @@ def main():
     else:
         print("  Semantic Scholar title-search disabled (--no-ss).")
 
-    papers = {}
-    for i, rel in enumerate(rel_files, 1):
-        abs_path = str(base / rel)
-        _parts = Path(rel).parts
-        parent_dir = str(Path(*_parts[:-1])) if len(_parts) > 1 else "."
-        print(f"  [{i:>3}/{len(rel_files)}] {rel[:70]}", end="", flush=True)
-        info = extract_doi(abs_path, use_ss)
-        papers[rel] = {
-            "doi":              info["doi"],
-            "doi_source":       info["doi_source"],
-            "title":            info["title"],
-            "abstract_snippet": info["abstract_snippet"],
-            "fallback_header":  info["fallback_header"],
-            "parent_dir":       parent_dir,
-            "duplicate_of":     None,
-        }
-        src = info["doi_source"] or "?"
-        print(f"  [{src}]")
-
-    # Duplicate detection: group by DOI, keep the most-nested copy
-    doi_groups: dict[str, list[str]] = {}
-    for rel, p in papers.items():
-        doi = (p["doi"] or "").lower()
-        if doi:
-            doi_groups.setdefault(doi, []).append(rel)
-    for doi, rels in doi_groups.items():
-        if len(rels) == 1:
-            continue
-        canonical = max(rels, key=lambda r: (len(Path(r).parts), r))
-        for rel in rels:
-            if rel != canonical:
-                papers[rel]["duplicate_of"] = canonical
-                print(f"  DUPLICATE: {rel}  (kept deeper: {canonical})")
+    papers = _scan_files(base, rel_files, use_ss)
+    _detect_duplicates(papers)
 
     scan = {
         "base":            str(base),
@@ -212,14 +259,12 @@ def main():
     n_dupes      = sum(1 for p in papers.values() if p["duplicate_of"])
     print(f"  Resolved: {n_resolved}  |  Unresolved: {n_unresolved}  |  Duplicates: {n_dupes}")
 
-    # Post-scan mode selection
     subdirs = detect_subdirs(base, rel_files)
     if args.mode:
         mode = args.mode
     elif subdirs:
         mode = prompt_mode(subdirs)
     else:
-        # Flat folder — no meaningful scaffold possible
         print("\nNo subdirectories found. Run generate_batch.py --mode scaffold manually.")
         mode = "scan-only"
 

@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 *.pyo
 .DS_Store
+# Collection workspaces (scan.json, taxonomy.yaml, batch_run.py, state.json).
+# Remove this line to track collection metadata across machines.
+collections/

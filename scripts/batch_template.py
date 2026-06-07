@@ -90,14 +90,18 @@ async def drive_upload(abs_path, subfolder):
     _, stderr = await proc.communicate()
     if proc.returncode != 0:
         raise RuntimeError(f"rclone copy failed: {{stderr.decode().strip()}}")
-    proc = await asyncio.create_subprocess_exec(
-        RCLONE_BIN, "link", f"{{dest}}/{{fname}}", root_flag,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(f"rclone link failed: {{stderr.decode().strip()}}")
-    return stdout.decode().strip()
+    # Retry rclone link once — Drive indexing can lag behind the copy by ~1s
+    for attempt in range(2):
+        if attempt:
+            await asyncio.sleep(2)
+        proc = await asyncio.create_subprocess_exec(
+            RCLONE_BIN, "link", f"{{dest}}/{{fname}}", root_flag,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            return stdout.decode().strip()
+    raise RuntimeError(f"rclone link failed: {{stderr.decode().strip()}}")
 
 # ── Semantic Scholar ───────────────────────────────────────────────────────────
 async def ss_lookup(doi, fallback_title=""):
@@ -350,12 +354,15 @@ BOOKS   = {books!r}
 COLLECTION_ORDER = {collection_order!r}
 
 # ── Main ───────────────────────────────────────────────────────────────────────
+BASE_COLLECTION = {collection_name!r}
+
 async def main(drive_only=False):
     t0 = time.monotonic()
     if not drive_only:
         print("\\n=== STEP 1: Collections ===")
+        create_or_get(BASE_COLLECTION)
         for name, parent_name in COLLECTION_ORDER:
-            parent_key = STATE["collections"].get(parent_name, "") if parent_name else ""
+            parent_key = STATE["collections"].get(parent_name or BASE_COLLECTION, "")
             create_or_get(name, parent_key)
         with open(STATE_FILE, "w") as f: json.dump(STATE, f, indent=2)
     print(f"\\n=== STEP 2: {{len(PAPERS)}} papers (concurrency={{CONCURRENCY}}, drive_only={{drive_only}}) ===")

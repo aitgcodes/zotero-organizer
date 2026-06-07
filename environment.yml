@@ -1,10 +1,11 @@
-name: zotero-organizer
+name: claudotero
 channels:
   - conda-forge
   - defaults
 dependencies:
   - python=3.11
   - pypdf=6.12.2
+  - pyyaml
   - pip
   - pip:
       - mcp==1.27.2

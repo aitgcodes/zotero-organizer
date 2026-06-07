@@ -1,0 +1,11 @@
+# CLI pipeline dependencies — no Claude Desktop required.
+# Install with:  pip install -r requirements.txt
+#            or: conda install --file requirements.txt
+#
+# For the full development environment (includes the MCP server for Claude Desktop),
+# use environment.yml instead:  conda env create -f environment.yml
+
+pyzotero>=1.13.0
+pypdf>=6.12.2
+pyyaml>=6.0
+python-dotenv>=1.2.2

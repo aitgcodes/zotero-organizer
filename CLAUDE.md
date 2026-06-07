@@ -1,76 +1,68 @@
-# Claudetoro
+# Claudetoro — developer reference
+
+## Project layout
+
+| File / folder | Role | Claude needed? |
+|---------------|------|---------------|
+| `zotero_mcp.py` | MCP server — exposes Zotero tools to Claude Desktop | Yes (Claude Desktop) |
+| `scripts/scan_pdfs.py` | Stage 1 — scans a PDF folder, extracts DOIs, writes `scan.json` | No |
+| `scripts/generate_batch.py` | Stage 2/3 bridge — builds `taxonomy.yaml` scaffold or generates `batch_run.py` | No (Claude optional for taxonomy editing) |
+| `scripts/batch_template.py` | Shared async runner template consumed by `generate_batch.py` | No |
+| `requirements.txt` | Minimal CLI deps (`pyzotero`, `pypdf`, `pyyaml`, `python-dotenv`) | — |
+| `environment.yml` | Full `claudotero` conda env (CLI deps + `mcp` for MCP server) | — |
 
 ## Environment
 
-All components of this project must be implemented and run within the **claudotero** conda environment.
+The `claudotero` conda environment is required for MCP server development (it includes
+`mcp`). The CLI pipeline only needs the packages in `requirements.txt`.
 
-To activate it:
-```
+```bash
+# Full env (MCP + CLI):
+conda env create -f environment.yml
 conda activate claudotero
+
+# CLI pipeline only (no conda required):
+pip install -r requirements.txt
 ```
 
-## Project Overview
+## CLI pipeline — stage logic
 
-A Zotero MCP server (`zotero_mcp.py`) that exposes tools for organizing local PDF files into Zotero collections. Registered in Claude Desktop as the `zotero` MCP server.
+### Stage 1 — `scripts/scan_pdfs.py`
 
-## MCP Tools
+Walks a folder recursively, extracts DOIs via a 4-step fallback chain:
+1. PDF metadata dict (`/doi`, `/DOI`, `/Subject`)
+2. Page-1 text regex (`_DOI_RE`, `_ARXIV_RE`)
+3. Semantic Scholar title search (skipped with `--no-ss`)
+4. Unresolved — stores first 300 chars of page-1 text as `fallback_header`
 
-| Tool | Description |
-|------|-------------|
-| `create_collection` | Create a new top-level Zotero collection, returns its key |
-| `extract_doi_from_local_pdf` | Extract DOI from a local PDF (metadata → page 1 regex → Semantic Scholar title search → fallback header text) |
-| `add_item_by_doi` | Resolve a DOI via Semantic Scholar, create the Zotero item, add it to a collection |
-| `upload_pdf_to_drive` | Upload a local PDF to Google Drive via rclone, returns a shareable URL |
-| `add_url_attachment` | Attach a URL (e.g. Drive link) to an existing Zotero item |
-| `get_drive_folder_id` | Return the configured `GOOGLE_DRIVE_FOLDER_ID` |
-
-## Typical Workflow
-
-1. `extract_doi_from_local_pdf` — get the DOI from the PDF
-2. `create_collection` (if needed) — create a Zotero collection
-3. `add_item_by_doi` — add the paper's metadata to Zotero under that collection
-4. `upload_pdf_to_drive` — upload the PDF to Google Drive, get a shareable link
-5. `add_url_attachment` — attach the Drive link to the Zotero item
-
-## Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `ZOTERO_USER_ID` | Numeric Zotero user ID |
-| `ZOTERO_API_KEY` | Zotero API key (Read/Write) |
-| `GOOGLE_DRIVE_FOLDER_ID` | Google Drive folder ID (from the folder URL) |
-| `RCLONE_REMOTE` | rclone remote name configured for Google Drive (e.g. `gdrive`) |
-
-## CLI Pipeline (`scripts/`)
-
-A Claude-independent 3-stage pipeline for batch-organising PDF folders into Zotero + Google Drive.
-Claude is an optional enhancement for Stage 2 only; all other stages are pure Python.
-
-### Stage 1 — Scan
-
-```bash
-python scripts/scan_pdfs.py <folder> --collection <Name> [--no-ss]
+Detects duplicates by DOI across all files. Writes `scan.json`:
+```json
+{
+  "base": "/abs/path",
+  "collection_name": "Plasmons",
+  "papers": {
+    "rel/file.pdf": {
+      "doi": "10.xxx/xxx",
+      "doi_source": "metadata|page1|ss_search|unresolved",
+      "title": "", "abstract_snippet": "",
+      "parent_dir": "PlasmonCatalysis",
+      "duplicate_of": null
+    }
+  }
+}
 ```
 
-Walks the folder, extracts DOIs (PDF metadata → page-1 regex → Semantic Scholar title search),
-detects duplicates, and writes `<folder>/scan.json`. Prompts for the next mode when subdirectories
-are found.
+If subdirectories are detected, prompts for generation mode (unless `--mode` is passed).
 
-Flags: `--no-ss` skips Semantic Scholar calls; `--mode [auto|scaffold|scan-only]` skips the prompt.
+### Stage 2 — `scripts/generate_batch.py`
 
-### Stage 2 — Taxonomy
+Three modes:
 
-**Scaffold** (pre-fill from subfolder structure, then edit manually or with Claude):
-```bash
-python scripts/generate_batch.py --mode scaffold <folder>/scan.json \
-    --output <folder>/taxonomy.yaml
-```
-
-**Auto** (use subfolder structure directly, no YAML needed):
-```bash
-python scripts/generate_batch.py --mode auto <folder>/scan.json \
-    --output /tmp/<Name>_batch.py
-```
+| Mode | Input | Output | When to use |
+|------|-------|--------|-------------|
+| `scaffold` | `scan.json` | `taxonomy.yaml` pre-filled from subfolders | Edit manually or hand to Claude |
+| `auto` | `scan.json` | `batch_run.py` directly | Subfolder structure is already the desired collection layout |
+| `taxonomy` | `taxonomy.yaml` + `scan.json` | `batch_run.py` | After editing/reviewing the scaffold |
 
 `taxonomy.yaml` format:
 ```yaml
@@ -86,12 +78,12 @@ assignments:
     tags: ["tag1", "tag2"]
 flagged:
   - file: "rel/unresolved.pdf"
-    search_query: "title query for Semantic Scholar"
+    search_query: "Semantic Scholar title query"
     collection: "Quantum-Plasmonics"
     tags: []
 books:
   - file: "rel/book.pdf"
-    type: "book"          # book | thesis | document
+    type: "book"            # book | thesis | document
     title: "Full title"
     authors: [{first: "First", last: "Last"}]
     year: "2006"
@@ -100,46 +92,49 @@ books:
     tags: []
 ```
 
-### Stage 3 — Generate & Run
+Drive folder paths are derived from the collection hierarchy:
+`Hydrodynamic-Modeling` with parent `Quantum-Plasmonics` under `Plasmons` →
+`Plasmons/Quantum-Plasmonics/Hydrodynamic-Modeling`.
 
-```bash
-# From taxonomy.yaml (after editing or Claude review):
-python scripts/generate_batch.py --mode taxonomy \
-    <folder>/taxonomy.yaml <folder>/scan.json \
-    --output /tmp/<Name>_batch.py
+### Stage 3 — generated `batch_run.py`
 
-# Run full pipeline (Zotero + Drive):
-python /tmp/<Name>_batch.py
+Self-contained async script rendered from `scripts/batch_template.py`. Flags:
 
-# Drive-only (Zotero items already exist, re-upload to Drive):
-python /tmp/<Name>_batch.py --mode drive-only
-```
+| Flag | Effect |
+|------|--------|
+| *(none)* | Full run: create Zotero collections + items + Drive upload + URL attachment |
+| `--dry-run` | Print what would happen; no Zotero or Drive changes (~1s) |
+| `--mode drive-only` | Skip Zotero item creation; upload to Drive and attach URL to existing items |
 
-The generated `batch_run.py` is self-contained — it embeds all config, manifests,
-and the async runner. Resumable via state file at `/tmp/<Name>_batch_state.json`.
+Resumable: progress is tracked in `/tmp/<Name>_batch_state.json`.
 
-### Complete example (Claude-free)
+Concurrency: up to 5 papers in parallel (`asyncio.Semaphore(5)`); Drive upload and
+Semantic Scholar lookup run concurrently per paper via `asyncio.gather`.
 
-```bash
-conda activate claudotero
-python scripts/scan_pdfs.py ~/papers/QuantumDots --collection QuantumDots
-# edit ~/papers/QuantumDots/taxonomy.yaml
-python scripts/generate_batch.py --mode taxonomy \
-    ~/papers/QuantumDots/taxonomy.yaml ~/papers/QuantumDots/scan.json \
-    --output /tmp/QuantumDots_batch.py
-python /tmp/QuantumDots_batch.py
-```
+## MCP tools
 
-## Dependencies
+| Tool | Description |
+|------|-------------|
+| `create_collection` | Create a Zotero collection; optional `parent_key` for nested collections |
+| `extract_doi_from_local_pdf` | Extract DOI (metadata → page-1 regex → SS title search → fallback header) |
+| `add_item_by_doi` | Resolve DOI via Semantic Scholar, create Zotero item, add to collection |
+| `upload_pdf_to_drive` | Upload PDF to Drive via rclone; `collection_path` sets hierarchical subfolder |
+| `add_url_attachment` | Attach a URL to an existing Zotero item |
+| `get_drive_folder_id` | Return configured `GOOGLE_DRIVE_FOLDER_ID` |
+| `get_collection_structure` | Return sub-collections and items of a collection key |
+| `add_tags_to_item` | Add tags to an existing Zotero item (deduplicates against existing tags) |
 
-- `pyzotero` — Zotero API client (includes Semantic Scholar integration)
-- `pypdf` — PDF reading for DOI extraction
-- `pyyaml` — YAML parsing for `taxonomy.yaml`
-- `mcp` — MCP server framework
-- `rclone` (system) — Google Drive upload; configured with institute Google account via `rclone config`
+## Environment variables
 
-## Setup Notes
+| Variable | Description |
+|----------|-------------|
+| `ZOTERO_USER_ID` | Numeric Zotero user ID |
+| `ZOTERO_API_KEY` | Zotero API key (Read/Write) |
+| `GOOGLE_DRIVE_FOLDER_ID` | Google Drive folder ID (from the folder URL) |
+| `RCLONE_REMOTE` | rclone remote name (e.g. `gdrive`) |
 
-- rclone is installed via Homebrew and configured with the institute Google account
-- The Drive folder targeted by `GOOGLE_DRIVE_FOLDER_ID` must be accessible to the authenticated rclone remote
-- MCP server config lives in `~/Library/Application Support/Claude/claude_desktop_config.json`
+## Setup notes
+
+- rclone must be configured with a Google account that has access to the Drive folder
+- MCP server config: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- The `mcp` package is only needed for `zotero_mcp.py`; the CLI scripts import it nowhere

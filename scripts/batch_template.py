@@ -51,6 +51,8 @@ def _load_state():
     return {{"collections": {{}}, "papers": {{}}}}
 
 async def _save_state(s):
+    if DRY_RUN:
+        return
     async with _state_lock:
         with open(STATE_FILE, "w") as f: json.dump(s, f, indent=2)
 
@@ -388,7 +390,8 @@ async def main(drive_only=False, dry_run=False):
         for name, parent_name in COLLECTION_ORDER:
             parent_key = STATE["collections"].get(parent_name or BASE_COLLECTION, "")
             create_or_get(name, parent_key)
-        with open(STATE_FILE, "w") as f: json.dump(STATE, f, indent=2)
+        if not DRY_RUN:
+            with open(STATE_FILE, "w") as f: json.dump(STATE, f, indent=2)
     print(f"\\n=== STEP 2: {{len(PAPERS)}} papers (concurrency={{CONCURRENCY}}, drive_only={{drive_only}}) ===")
     await asyncio.gather(*[
         process_paper(rel, doi, coll, tags, drive_only=drive_only)

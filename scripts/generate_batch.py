@@ -57,6 +57,28 @@ def _derive_drive_paths(base_collection: str, collections: list[dict]) -> dict[s
     return paths
 
 
+def _collections_from_dirs(dirs: set) -> tuple[list[dict], dict[str, str]]:
+    """
+    Build (collections_list, dir→leaf_name) from a set of relative dir paths.
+    Intermediate segments are created so parents always precede children.
+    E.g., {"A/B"} → [{"name":"A","parent":None},{"name":"B","parent":"A"}], {"A/B":"B"}
+    """
+    all_paths: set[str] = set()
+    for d in dirs:
+        parts = d.split("/")
+        for i in range(1, len(parts) + 1):
+            all_paths.add("/".join(parts[:i]))
+    sorted_paths = sorted(all_paths, key=lambda p: (p.count("/"), p))
+    collections = []
+    for path in sorted_paths:
+        parts = path.rsplit("/", 1)
+        name   = parts[-1]
+        parent = parts[0].rsplit("/", 1)[-1] if len(parts) == 2 else None
+        collections.append({"name": name, "parent": parent})
+    dir_to_leaf = {d: d.rsplit("/", 1)[-1] for d in dirs}
+    return collections, dir_to_leaf
+
+
 def _topo_order(collections: list[dict]) -> list[tuple[str, str | None]]:
     """Return (name, parent_name) in topological order (parents before children)."""
     parent_of = {c["name"]: c.get("parent") for c in collections}
@@ -83,13 +105,9 @@ def run_scaffold(scan: dict, output: Path):
     base_collection = scan["collection_name"]
     papers = scan["papers"]
 
-    # Build collection list from unique parent_dir values
-    subdirs = sorted({p["parent_dir"] for p in papers.values() if p["parent_dir"] != "."})
-    root_dir = "." in {p["parent_dir"] for p in papers.values()}
-
-    collections = [{"name": d, "parent": None} for d in subdirs]
-    if root_dir and not subdirs:
-        collections = [{"name": base_collection, "parent": None}]
+    dirs = {p["parent_dir"] for p in papers.values() if p["parent_dir"] != "."}
+    collections, dir_to_leaf = _collections_from_dirs(dirs)
+    root_coll = collections[0]["name"] if collections else base_collection
 
     # Build assignments
     assignments = {}
@@ -97,7 +115,10 @@ def run_scaffold(scan: dict, output: Path):
     for rel, p in papers.items():
         if p.get("duplicate_of"):
             continue
-        coll = p["parent_dir"] if p["parent_dir"] != "." else (subdirs[0] if subdirs else base_collection)
+        if p["parent_dir"] == ".":
+            coll = root_coll
+        else:
+            coll = dir_to_leaf.get(p["parent_dir"], root_coll)
         if p["doi"]:
             assignments[rel] = {
                 "collection": coll,
@@ -132,14 +153,21 @@ def run_scaffold(scan: dict, output: Path):
 # ---------------------------------------------------------------------------
 
 def build_manifests_from_scan(scan: dict):
-    """Auto mode: use parent_dir as collection name."""
+    """Auto mode: use parent_dir leaf name as collection name."""
     papers_list, flagged_list, books_list = [], [], []
     base_collection = scan["collection_name"]
+
+    dirs = {p["parent_dir"] for p in scan["papers"].values() if p["parent_dir"] != "."}
+    _, dir_to_leaf = _collections_from_dirs(dirs) if dirs else ([], {})
+    root_coll = next(iter(dir_to_leaf.values()), base_collection)
 
     for rel, p in scan["papers"].items():
         if p.get("duplicate_of"):
             continue
-        coll = p["parent_dir"] if p["parent_dir"] != "." else base_collection
+        if p["parent_dir"] == ".":
+            coll = root_coll
+        else:
+            coll = dir_to_leaf.get(p["parent_dir"], p["parent_dir"].rsplit("/", 1)[-1])
         tags = []
         if p["doi"]:
             papers_list.append((rel, p["doi"], coll, tags))
@@ -193,9 +221,9 @@ def build_manifests_from_taxonomy(taxonomy: dict, scan: dict):
 
 def build_collections_from_scan(scan: dict):
     base_collection = scan["collection_name"]
-    subdirs = sorted({p["parent_dir"] for p in scan["papers"].values() if p["parent_dir"] != "."})
-    colls = [{"name": d, "parent": None} for d in subdirs]
-    return base_collection, colls
+    dirs = {p["parent_dir"] for p in scan["papers"].values() if p["parent_dir"] != "."}
+    colls, dir_to_leaf = _collections_from_dirs(dirs) if dirs else ([], {})
+    return base_collection, colls, dir_to_leaf
 
 
 def render_batch(
@@ -234,7 +262,7 @@ def run_generate(scan: dict, taxonomy: dict | None, output: Path, mode: str):
 
     if mode == "auto":
         papers, flagged, books = build_manifests_from_scan(scan)
-        _, collections = build_collections_from_scan(scan)
+        _, collections, _ = build_collections_from_scan(scan)
     else:
         papers, flagged, books = build_manifests_from_taxonomy(taxonomy, scan)
         collections = taxonomy.get("collections") or []

@@ -166,7 +166,8 @@ def main():
     papers = {}
     for i, rel in enumerate(rel_files, 1):
         abs_path = str(base / rel)
-        parent_dir = str(Path(rel).parts[0]) if len(Path(rel).parts) > 1 else "."
+        _parts = Path(rel).parts
+        parent_dir = str(Path(*_parts[:-1])) if len(_parts) > 1 else "."
         print(f"  [{i:>3}/{len(rel_files)}] {rel[:70]}", end="", flush=True)
         info = extract_doi(abs_path, use_ss)
         papers[rel] = {
@@ -181,18 +182,20 @@ def main():
         src = info["doi_source"] or "?"
         print(f"  [{src}]")
 
-    # Duplicate detection: group by DOI, keep first occurrence
-    doi_to_canonical: dict[str, str] = {}
+    # Duplicate detection: group by DOI, keep the most-nested copy
+    doi_groups: dict[str, list[str]] = {}
     for rel, p in papers.items():
-        doi = p["doi"]
-        if not doi:
+        doi = (p["doi"] or "").lower()
+        if doi:
+            doi_groups.setdefault(doi, []).append(rel)
+    for doi, rels in doi_groups.items():
+        if len(rels) == 1:
             continue
-        doi_l = doi.lower()
-        if doi_l in doi_to_canonical:
-            papers[rel]["duplicate_of"] = doi_to_canonical[doi_l]
-            print(f"  DUPLICATE: {rel}  (same DOI as {doi_to_canonical[doi_l]})")
-        else:
-            doi_to_canonical[doi_l] = rel
+        canonical = max(rels, key=lambda r: (len(Path(r).parts), r))
+        for rel in rels:
+            if rel != canonical:
+                papers[rel]["duplicate_of"] = canonical
+                print(f"  DUPLICATE: {rel}  (kept deeper: {canonical})")
 
     scan = {
         "base":            str(base),

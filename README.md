@@ -43,20 +43,27 @@ Works with a plain venv, an existing conda env, or `conda install --file require
 pip install -r requirements.txt
 ```
 
-### Configure credentials
+### First-time setup
+
+Run the setup wizard once after installing. It prompts for all required credentials,
+validates your configuration, and creates the `collections/` workspace directory.
 
 ```bash
-cp .env.template .env
+python scripts/setup.py
 ```
 
-Fill in `.env`:
+You will be prompted for:
 
-| Variable | Description |
-|----------|-------------|
-| `ZOTERO_USER_ID` | Numeric Zotero user ID (Settings → Feeds/API on zotero.org) |
-| `ZOTERO_API_KEY` | Zotero API key with Read/Write access |
-| `GOOGLE_DRIVE_FOLDER_ID` | ID from the Drive folder URL: `.../folders/<ID>` |
-| `RCLONE_REMOTE` | rclone remote name configured for Google Drive (e.g. `gdrive`) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ORGANIZE_HOME` | project root | Where `collections/` lives |
+| `ZOTERO_USER_ID` | — | Numeric user ID (zotero.org → Settings → Feeds/API) |
+| `ZOTERO_API_KEY` | — | API key with Read/Write access |
+| `GOOGLE_DRIVE_FOLDER_ID` | — | ID from the Drive folder URL: `.../folders/<ID>` |
+| `RCLONE_REMOTE` | `gdrive` | rclone remote name for Google Drive |
+
+The wizard writes `.env`, validates rclone/Zotero/Drive connectivity, and prints
+next-step instructions. Re-run at any time to update individual values.
 
 ### Zotero setup
 
@@ -90,44 +97,144 @@ Fill in `.env`:
 
 ### Running the pipeline
 
-#### Stage 1 — Scan PDFs
+#### Guided mode (recommended)
 
-Walks the folder, extracts DOIs via a 4-step fallback chain (PDF metadata → page-1
-regex → Semantic Scholar title search → raw header text), detects duplicates by DOI,
-and writes `scan.json`.
+`organize.py` runs all three stages interactively. It detects the current state of the
+collection workspace and prompts only for what it needs.
 
 ```bash
-python scripts/scan_pdfs.py /path/to/pdfs --collection "Plasmons"
+python scripts/organize.py /path/to/pdfs --collection "Plasmons"
 ```
 
-Flags:
-- `--no-ss` — skip Semantic Scholar title search (faster, offline)
-- `--mode [auto|scaffold|scan-only]` — skip the interactive prompt after scanning
+**First run** (no prior state):
 
-After scanning, if subdirectories are found you will be prompted to choose a generation
-mode (or pass `--mode` to skip the prompt).
+```
+  PDF folder : /path/to/pdfs
+  Collection : Plasmons
+  Workspace  : /path/to/zotero-organizer/collections/Plasmons/
 
-#### Stage 2 — Build taxonomy
+============================================================
+  Stage 1 — Full scan
+============================================================
+Found 22 PDF files. Extracting DOIs...
+  ...
 
-**Option A: use subfolder structure directly (auto)**
-
-Collections mirror the immediate subdirectory names. No human input needed.
-
-```bash
-python scripts/generate_batch.py --mode auto scan.json --output /tmp/batch_run.py
+============================================================
+  Stage 2 — Generate batch script
+============================================================
+Choose how to build the collection structure:
+  [1] Scaffold — generate taxonomy.yaml, edit manually        <-- default
+  [2] Auto     — use subfolder names directly, no editing
+  [3] LLM/Claude — use taxonomy.yaml edited with Claude or another LLM
+      ⚠  Requires Claude Desktop (MCP server) or a separate LLM session
+  Choice [1]:
 ```
 
-**Option B: review and edit a taxonomy scaffold (recommended for new collections)**
+Choosing **scaffold** writes `collections/Plasmons/taxonomy.yaml` and exits cleanly:
+```
+taxonomy.yaml written → collections/Plasmons/taxonomy.yaml
+
+Edit it in your preferred editor, then re-run:
+  python scripts/organize.py /path/to/pdfs --collection Plasmons
+```
+
+**Re-run after editing taxonomy.yaml:**
+
+```
+  Found existing scan.json (2026-06-07, 22 files). Scan up to date — skipping.
+
+  Found existing taxonomy.yaml (last edited 2026-06-07).
+    [1] Use existing taxonomy            <-- default
+    [2] Regenerate scaffold from scratch
+    [3] Auto-generate (skip taxonomy)
+  Choice [1]:
+
+============================================================
+  Stage 3 — Dry run validation
+============================================================
+=== DRY RUN — no Zotero or Drive changes will be made ===
+  ...
+=== DONE: 22/22 in 1s ===
+
+Run for real? This will create Zotero items and upload to Drive. [y/N]:
+```
+
+**Re-run when new PDFs are added to the folder:**
+
+```
+  Found existing scan.json (2026-06-07, 22 files).
+  3 new PDFs detected, 0 removed.
+    [1] Scan new files only (incremental)  <-- default
+    [2] Full rescan
+    [3] Skip scan
+  Choice [1]:
+
+  3 new papers → collections/Plasmons/taxonomy_patch.yaml
+  Review and merge into taxonomy.yaml, then re-run this command.
+```
+
+#### Organize flags
+
+| Flag | Effect |
+|------|--------|
+| `--mode scaffold\|auto\|taxonomy` | Skip the Stage 2 prompt |
+| `--no-ss` | Skip Semantic Scholar title search (faster, offline) |
+| `--full-scan` | Force complete rescan even if scan.json exists |
+| `--skip-scan` | Skip Stage 1 entirely |
+| `--dry-run` | Stop after dry-run validation, don't run for real |
+| `--workspace <path>` | Override the default workspace location |
+
+#### Workspace layout
+
+All generated files go to `collections/<collection-name>/` inside the project.
+**Your PDF folder is never modified.**
+
+```
+zotero-organizer/
+  collections/
+    Plasmons/
+      scan.json        ← Stage 1 output; updated incrementally on re-runs
+      taxonomy.yaml    ← Stage 2 scaffold; edit this to customise collections
+      taxonomy_patch.yaml  ← new files found on re-scan; merge into taxonomy.yaml
+      batch_run.py     ← Stage 2 output; self-contained async runner
+      state.json       ← Stage 3 progress; allows resuming interrupted runs
+```
+
+By default `collections/` is excluded from git (see `.gitignore`). To track taxonomy
+files across machines, remove the `collections/` line from `.gitignore`.
+
+---
+
+#### Stage-by-stage (advanced / scripting)
+
+The individual stage scripts can also be used directly when you need more control.
+
+**Stage 1 — Scan**
 
 ```bash
-# Generate editable taxonomy.yaml pre-filled from subfolder structure:
-python scripts/generate_batch.py --mode scaffold scan.json
+python scripts/scan_pdfs.py /path/to/pdfs --collection "Plasmons" \
+    --output collections/Plasmons/scan.json [--no-ss]
+```
 
-# Edit taxonomy.yaml — rearrange collections, add tags, handle flagged/unresolved files.
+DOI extraction uses a 4-step fallback: PDF metadata → page-1 regex →
+Semantic Scholar title search → raw header text. Duplicates are detected by DOI;
+the most deeply nested copy is kept as canonical.
 
-# Generate batch script from the edited taxonomy:
-python scripts/generate_batch.py --mode taxonomy taxonomy.yaml scan.json \
-    --output /tmp/batch_run.py
+**Stage 2 — Build taxonomy**
+
+```bash
+# Scaffold from scan.json:
+python scripts/generate_batch.py --mode scaffold collections/Plasmons/scan.json \
+    --output collections/Plasmons/taxonomy.yaml
+
+# Auto (no editing):
+python scripts/generate_batch.py --mode auto collections/Plasmons/scan.json \
+    --output collections/Plasmons/batch_run.py
+
+# From edited taxonomy.yaml:
+python scripts/generate_batch.py --mode taxonomy \
+    collections/Plasmons/taxonomy.yaml collections/Plasmons/scan.json \
+    --output collections/Plasmons/batch_run.py
 ```
 
 `taxonomy.yaml` format:
@@ -163,25 +270,25 @@ books:            # non-journal items without DOIs
     tags: []
 ```
 
-Drive folder paths are built automatically from the collection hierarchy:
+Nested collections are built automatically from subfolder structure.
 `Hydrodynamic-Modeling` with parent `Quantum-Plasmonics` under `Plasmons` →
-`Plasmons/Quantum-Plasmonics/Hydrodynamic-Modeling/`.
+Drive path `Plasmons/Quantum-Plasmonics/Hydrodynamic-Modeling/`.
 
-#### Stage 3 — Run the batch
+**Stage 3 — Run the batch**
 
 ```bash
-# Validate first (no Zotero or Drive changes, ~1s):
-python /tmp/batch_run.py --dry-run
+# Validate (no Zotero or Drive changes, ~1s):
+python collections/Plasmons/batch_run.py --dry-run
 
 # Full run — create Zotero collections + items + Drive upload + URL attachment:
-python /tmp/batch_run.py
+python collections/Plasmons/batch_run.py
 
-# Drive upload only — Zotero items already exist, just upload and attach links:
-python /tmp/batch_run.py --mode drive-only
+# Drive upload only — Zotero items already exist:
+python collections/Plasmons/batch_run.py --mode drive-only
 ```
 
-The batch runner is resumable: progress is saved to `/tmp/<CollectionName>_batch_state.json`.
-Interrupted runs pick up where they left off.
+Progress is saved to `collections/Plasmons/state.json`. Interrupted runs resume
+from where they left off.
 
 ---
 
@@ -189,17 +296,18 @@ Interrupted runs pick up where they left off.
 
 ### Stage 2 with Claude
 
-After Stage 1, hand `taxonomy.yaml` (generated with `--mode scaffold`) to Claude for
-thematic grouping suggestions. Claude can reorganize collections, propose tags, and
-identify related papers — then you save the edited YAML and run Stage 3.
+After Stage 1, hand `taxonomy.yaml` to Claude for thematic grouping suggestions.
+Claude can reorganize collections, propose tags, and identify related papers.
+Save the edited YAML, then re-run `organize.py` and choose option 1 (use existing taxonomy).
 
-This is entirely optional. The `auto` and `scaffold` modes in Stage 2 produce
-ready-to-run batch scripts without Claude.
+Select option 3 (LLM/Claude) in the Stage 2 prompt to acknowledge this path.
+Note: this requires Claude Desktop with the MCP server configured (see below),
+or a separate Claude session where you paste the taxonomy content manually.
 
 ### MCP server (Claude Desktop)
 
-`zotero_mcp.py` exposes the same Zotero/Drive workflow as callable tools within
-Claude Desktop, enabling an interactive per-PDF workflow:
+`zotero_mcp.py` exposes the Zotero/Drive workflow as callable tools within Claude
+Desktop, enabling an interactive per-PDF workflow.
 
 **Additional requirement:** [Claude Desktop](https://claude.ai/download)
 

@@ -106,7 +106,12 @@ Self-contained async script rendered from `scripts/batch_template.py`. Flags:
 | `--dry-run` | Print what would happen; no Zotero or Drive changes (~1s) |
 | `--mode drive-only` | Skip Zotero item creation; upload to Drive and attach URL to existing items |
 
-Resumable: progress is tracked in `/tmp/<Name>_batch_state.json`.
+Resumable: progress is tracked in `collections/<Name>/state.json`.
+
+Drive pre-flight check: on the first real run (state empty), `_preflight_drive_check()`
+runs `rclone lsf` on the base collection folder. If it already has content the user
+is prompted to merge (adds `--ignore-existing` to rclone copy), overwrite, redirect to
+a timestamped folder, or abort. Skipped in dry-run and on resume.
 
 Concurrency: up to 5 papers in parallel (`asyncio.Semaphore(5)`); Drive upload and
 Semantic Scholar lookup run concurrently per paper via `asyncio.gather`.

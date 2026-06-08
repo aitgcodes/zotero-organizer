@@ -290,6 +290,22 @@ python collections/Plasmons/batch_run.py --mode drive-only
 Progress is saved to `collections/Plasmons/state.json`. Interrupted runs resume
 from where they left off.
 
+If the Drive collection folder already contains files from a previous run, the batch
+will pause before uploading and prompt you to choose:
+
+```
+⚠  Drive folder 'Plasmons/' already contains 3 item(s):
+     Quantum-Plasmonics/
+     ...
+
+  [1] Merge    — add new files, skip any that already exist  <-- default
+  [2] Overwrite — replace existing files with local copies
+  [3] New folder — upload to 'Plasmons_20260608/' instead
+  [4] Abort
+```
+
+This check is skipped on dry-runs and when resuming an interrupted run.
+
 ---
 
 ## Optional: Claude integration

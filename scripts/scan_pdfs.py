@@ -153,7 +153,12 @@ def _detect_duplicates(papers: dict[str, dict]) -> None:
                 print(f"  DUPLICATE: {rel}  (kept deeper: {canonical})")
 
 
-def incremental_scan(base: Path, existing: dict, use_ss: bool) -> tuple[dict, list[str], list[str]]:
+def incremental_scan(
+    base: Path,
+    existing: dict,
+    use_ss: bool,
+    current: set[str] | None = None,
+) -> tuple[dict, list[str], list[str]]:
     """
     Diff the PDF folder against an existing scan dict.
 
@@ -161,9 +166,10 @@ def incremental_scan(base: Path, existing: dict, use_ss: bool) -> tuple[dict, li
         (updated_scan, added_rels, removed_rels)
     added_rels  — files in folder but not in existing scan
     removed_rels — files in existing scan but no longer on disk (flagged, not deleted)
+    current     — pre-computed walk_pdfs result; recomputed if not provided
     """
     known   = set(existing["papers"].keys())
-    current = set(walk_pdfs(base))
+    current = current if current is not None else set(walk_pdfs(base))
     added   = sorted(current - known)
     removed = sorted(known - current)
 

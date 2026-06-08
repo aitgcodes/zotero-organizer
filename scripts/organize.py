@@ -204,7 +204,7 @@ def main():
                 added, removed = [], []
             else:
                 sep("Stage 1 — Incremental scan")
-                scan, added, removed = incremental_scan(folder, existing, not args.no_ss)
+                scan, added, removed = incremental_scan(folder, existing, not args.no_ss, current=current)
                 scan_json.write_text(json.dumps(scan, indent=2, ensure_ascii=False))
                 n_res = sum(1 for r in added if scan["papers"][r].get("doi"))
                 print(f"\nScan updated. +{len(added)} files ({n_res} resolved, "
@@ -299,7 +299,13 @@ def main():
         return
 
     if state_file.exists():
-        state_file.unlink()
+        import json as _json
+        _state = _json.loads(state_file.read_text())
+        _done = sum(1 for v in _state.get("papers", {}).values() if v.get("done"))
+        if _done > 0:
+            print(f"\n  Resuming: {_done} paper(s) already done — state preserved.")
+        else:
+            state_file.unlink()
 
     sep("Stage 3 — Running batch")
     run([sys.executable, str(batch_py)])

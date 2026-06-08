@@ -36,22 +36,41 @@ def load_scan(path: str) -> dict:
 
 def load_taxonomy(path: str) -> dict:
     with open(path, encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        data = yaml.safe_load(f)
+    if data is None:
+        raise ValueError(f"{path} is empty. Add at least a 'base_collection:' key.")
+    return data
 
 
 def _derive_drive_paths(base_collection: str, collections: list[dict]) -> dict[str, str]:
     """Walk the parent chain for each collection and build its full Drive path."""
+    known_names = {c["name"] for c in collections}
     parent_of = {c["name"]: c.get("parent") for c in collections}
-    paths = {}
-    def path_for(name):
+    paths: dict[str, str] = {}
+    in_progress: set[str] = set()
+
+    def path_for(name: str) -> str:
         if name in paths:
             return paths[name]
+        if name in in_progress:
+            raise ValueError(
+                f"Circular parent reference detected for collection '{name}'. "
+                "Check your taxonomy.yaml for a parent → child → parent cycle."
+            )
+        in_progress.add(name)
         parent = parent_of.get(name)
         if parent:
+            if parent not in known_names:
+                raise ValueError(
+                    f"Collection '{name}' references unknown parent '{parent}'. "
+                    "Check the 'parent' field in your taxonomy.yaml collections list."
+                )
             paths[name] = f"{path_for(parent)}/{name}"
         else:
             paths[name] = f"{base_collection}/{name}"
+        in_progress.discard(name)
         return paths[name]
+
     for c in collections:
         path_for(c["name"])
     return paths
@@ -70,10 +89,19 @@ def _collections_from_dirs(dirs: set) -> tuple[list[dict], dict[str, str]]:
             all_paths.add("/".join(parts[:i]))
     sorted_paths = sorted(all_paths, key=lambda p: (p.count("/"), p))
     collections = []
+    seen_names: dict[str, str] = {}  # name → first full path that used it
     for path in sorted_paths:
         parts = path.rsplit("/", 1)
         name   = parts[-1]
         parent = parts[0].rsplit("/", 1)[-1] if len(parts) == 2 else None
+        if name in seen_names:
+            raise ValueError(
+                f"Duplicate collection name '{name}': appears in both "
+                f"'{seen_names[name]}' and '{path}'. "
+                f"Rename one subdirectory so all leaf names are unique "
+                f"(e.g., '{parts[0]}/{parts[0].rsplit('/', 1)[-1]}-{name}')."
+            )
+        seen_names[name] = path
         collections.append({"name": name, "parent": parent})
     dir_to_leaf = {d: d.rsplit("/", 1)[-1] for d in dirs}
     return collections, dir_to_leaf
@@ -81,6 +109,14 @@ def _collections_from_dirs(dirs: set) -> tuple[list[dict], dict[str, str]]:
 
 def _topo_order(collections: list[dict]) -> list[tuple[str, str | None]]:
     """Return (name, parent_name) in topological order (parents before children)."""
+    seen_names: dict[str, None] = {}
+    for c in collections:
+        if c["name"] in seen_names:
+            raise ValueError(
+                f"Duplicate collection name '{c['name']}' in collections list. "
+                "All collection names must be unique. Rename one to resolve the conflict."
+            )
+        seen_names[c["name"]] = None
     parent_of = {c["name"]: c.get("parent") for c in collections}
     order = []
     visited = set()

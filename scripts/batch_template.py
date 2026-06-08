@@ -35,13 +35,13 @@ GLOBAL_TAG      = {global_tag!r}
 COLL_DRIVE_PATH = {coll_drive_path!r}
 
 CONCURRENCY = 5
-SS_DELAY    = 0.35
+SS_DELAY    = 1.1   # Semantic Scholar public API: ~1 req/s; 1.1s gives safe headroom
 DRY_RUN            = False  # set by --dry-run flag at runtime
 RCLONE_EXTRA_FLAGS = []     # set by _preflight_drive_check; ["--ignore-existing"] in merge mode
 
 zot    = zotero.Zotero(os.environ["ZOTERO_USER_ID"], "user", os.environ["ZOTERO_API_KEY"])
 sem    = asyncio.Semaphore(CONCURRENCY)
-ss_sem = asyncio.Semaphore(2)
+ss_sem = asyncio.Semaphore(1)  # serialise SS calls — public API rate limit ~1 req/s
 
 # ── State ─────────────────────────────────────────────────────────────────────
 _state_lock = asyncio.Lock()
@@ -285,6 +285,12 @@ async def process_flagged(rel_file, search_query, coll_name, tags, drive_only=Fa
     key = f"flagged::{{rel_file}}"
     if STATE["papers"].get(key, {{}}).get("done"):
         print(f"  SKIP  {{rel_file}}"); return
+    # Run SS search before acquiring sem — ss_search has its own ss_sem.
+    # Calling process_paper while holding sem would deadlock when all slots are full.
+    doi, _ = await ss_search(search_query)
+    if doi and not drive_only:
+        await process_paper(rel_file, doi, coll_name, tags, label=key)
+        return
     async with sem:
         fname      = os.path.basename(rel_file)
         abs_path   = os.path.join(BASE, rel_file)
@@ -292,9 +298,6 @@ async def process_flagged(rel_file, search_query, coll_name, tags, drive_only=Fa
         drive_path = COLL_DRIVE_PATH.get(coll_name, coll_name)
         entry      = {{}}
         print(f"  FLAGGED {{fname[:60]}}")
-        doi, _ = await ss_search(search_query)
-        if doi and not drive_only:
-            await process_paper(rel_file, doi, coll_name, tags, label=key); return
         try:
             url = await drive_upload(abs_path, drive_path); entry["drive_url"] = url
         except Exception as e:
@@ -372,6 +375,7 @@ async def process_book(rel_file, item_type, title, first, last, year, extra, col
 async def _preflight_drive_check():
     """Warn and prompt if the Drive collection folder already has content."""
     global RCLONE_EXTRA_FLAGS, COLL_DRIVE_PATH, BASE_COLLECTION
+    proc = None
     try:
         proc = await asyncio.create_subprocess_exec(
             RCLONE_BIN, "lsf", f"{{RCLONE_REMOTE}}:{{BASE_COLLECTION}}",
@@ -380,6 +384,9 @@ async def _preflight_drive_check():
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
     except Exception as e:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.communicate()
         print(f"  ⚠  Drive preflight check skipped: {{e}}")
         return
     contents = stdout.decode().strip()
@@ -442,6 +449,13 @@ async def main(drive_only=False, dry_run=False):
             create_or_get(name, parent_key)
         if not DRY_RUN:
             with open(STATE_FILE, "w") as f: json.dump(STATE, f, indent=2)
+    elif not STATE["collections"]:
+        # drive-only with no cached state — resolve existing collection keys from Zotero
+        print("\\n=== Resolving collection keys (drive-only mode) ===")
+        create_or_get(BASE_COLLECTION)
+        for name, parent_name in COLLECTION_ORDER:
+            parent_key = STATE["collections"].get(parent_name or BASE_COLLECTION, "")
+            create_or_get(name, parent_key)
     print(f"\\n=== STEP 2: {{len(PAPERS)}} papers (concurrency={{CONCURRENCY}}, drive_only={{drive_only}}) ===")
     await asyncio.gather(*[
         process_paper(rel, doi, coll, tags, drive_only=drive_only)

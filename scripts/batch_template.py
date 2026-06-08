@@ -17,7 +17,7 @@ Collection: {collection_name}
 Source scan: {scan_path}
 """
 
-import argparse, asyncio, json, os, shutil, sys, time
+import argparse, asyncio, datetime, json, os, shutil, sys, time
 from dotenv import load_dotenv
 
 load_dotenv({env_path!r}, override=False)
@@ -36,7 +36,8 @@ COLL_DRIVE_PATH = {coll_drive_path!r}
 
 CONCURRENCY = 5
 SS_DELAY    = 0.35
-DRY_RUN     = False  # set by --dry-run flag at runtime
+DRY_RUN            = False  # set by --dry-run flag at runtime
+RCLONE_EXTRA_FLAGS = []     # set by _preflight_drive_check; ["--ignore-existing"] in merge mode
 
 zot    = zotero.Zotero(os.environ["ZOTERO_USER_ID"], "user", os.environ["ZOTERO_API_KEY"])
 sem    = asyncio.Semaphore(CONCURRENCY)
@@ -94,7 +95,7 @@ async def drive_upload(abs_path, subfolder):
     root_flag = f"--drive-root-folder-id={{DRIVE_FOLDER_ID}}"
     fname     = os.path.basename(abs_path)
     proc = await asyncio.create_subprocess_exec(
-        RCLONE_BIN, "copy", abs_path, dest, root_flag,
+        RCLONE_BIN, "copy", abs_path, dest, root_flag, *RCLONE_EXTRA_FLAGS,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     _, stderr = await proc.communicate()
@@ -367,6 +368,51 @@ async def process_book(rel_file, item_type, title, first, last, year, extra, col
         print(f"  BOOK DONE {{item_key}}  {{fname[:40]}}")
         entry["done"] = True; STATE["papers"][key] = entry; await _save_state(STATE)
 
+# ── Drive pre-flight check ────────────────────────────────────────────────────
+async def _preflight_drive_check():
+    """Warn and prompt if the Drive collection folder already has content."""
+    global RCLONE_EXTRA_FLAGS, COLL_DRIVE_PATH, BASE_COLLECTION
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            RCLONE_BIN, "lsf", f"{{RCLONE_REMOTE}}:{{BASE_COLLECTION}}",
+            f"--drive-root-folder-id={{DRIVE_FOLDER_ID}}", "--max-depth=1",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+    except Exception as e:
+        print(f"  ⚠  Drive preflight check skipped: {{e}}")
+        return
+    contents = stdout.decode().strip()
+    if proc.returncode != 0 or not contents:
+        return
+    lines = contents.splitlines()
+    print(f"\\n⚠  Drive folder '{{BASE_COLLECTION}}/' already contains {{len(lines)}} item(s):")
+    for line in lines[:5]:
+        print(f"     {{line}}")
+    if len(lines) > 5:
+        print(f"     ... and {{len(lines) - 5}} more")
+    suffix = datetime.datetime.now().strftime("%Y%m%d")
+    print(f"\\n  [1] Merge    — add new files, skip any that already exist  <-- default")
+    print(f"  [2] Overwrite — replace existing files with local copies")
+    print(f"  [3] New folder — upload to '{{BASE_COLLECTION}}_{{suffix}}/' instead")
+    print(f"  [4] Abort")
+    try:
+        choice = input("  Choice [1]: ").strip() or "1"
+    except EOFError:
+        choice = "1"
+    if choice == "1":
+        RCLONE_EXTRA_FLAGS = ["--ignore-existing"]
+        print(f"  → Merge: existing files will be skipped.")
+    elif choice == "2":
+        print(f"  → Overwrite: changed files will be replaced.")
+    elif choice == "3":
+        new_base = f"{{BASE_COLLECTION}}_{{suffix}}"
+        COLL_DRIVE_PATH = {{k: v.replace(BASE_COLLECTION, new_base, 1) for k, v in COLL_DRIVE_PATH.items()}}
+        BASE_COLLECTION = new_base
+        print(f"  → Will upload to '{{new_base}}/'")
+    else:
+        sys.exit("Aborted.")
+
 # ── Manifests (generated) ──────────────────────────────────────────────────────
 PAPERS  = {papers!r}
 FLAGGED = {flagged!r}
@@ -384,6 +430,10 @@ async def main(drive_only=False, dry_run=False):
     if DRY_RUN:
         print("=== DRY RUN — no Zotero or Drive changes will be made ===")
     t0 = time.monotonic()
+    if not DRY_RUN:
+        done_count = sum(1 for v in STATE["papers"].values() if v.get("done"))
+        if done_count == 0:
+            await _preflight_drive_check()
     if not drive_only:
         print("\\n=== STEP 1: Collections ===")
         create_or_get(BASE_COLLECTION)

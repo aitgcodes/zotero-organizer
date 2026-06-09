@@ -4,6 +4,31 @@ Organize local PDF folders into Zotero collections with Google Drive links — w
 entirely from the command line, no Claude required. Claude Desktop integration is
 available as an optional enhancement.
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+---
+
+## Quick start
+
+```bash
+# 1. Clone and install
+git clone https://github.com/aitgcodes/zotero-organizer.git
+cd zotero-organizer
+pip install -r requirements.txt          # or: conda env create -f environment.yml
+
+# 2. Configure credentials (one-time)
+python scripts/setup.py
+
+# 3. Organize a folder of PDFs
+python scripts/organize.py ~/path/to/pdfs --collection "MyCollection"
+# Follow the prompts — done.
+```
+
+That's it. The guided prompts handle everything else: DOI extraction, Zotero
+collection creation, Google Drive upload, and URL attachment.
+
+---
+
 ## Components
 
 | Component | File | Needs Claude? | What it does |

@@ -8,6 +8,9 @@ an optional enhancement.
 
 > **Full user manual** (step-by-step installation, usage guide, troubleshooting):
 > [docs/manual.md](docs/manual.md) · [PDF](docs/manual.pdf)
+>
+> **AI skills** (Claude Code slash commands + prompts for other AI platforms):
+> [docs/skills/README.md](docs/skills/README.md)
 
 ---
 

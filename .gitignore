@@ -6,3 +6,4 @@ __pycache__/
 # Collection workspaces (scan.json, taxonomy.yaml, batch_run.py, state.json).
 # Remove this line to track collection metadata across machines.
 collections/
+CLAUDE.md

@@ -28,6 +28,15 @@ execution are Python subprocesses — zero tokens. Rough estimates for Stage 2:
 
 ---
 
+## For contributors
+
+If you are working on the codebase itself and want Claude to understand the project
+structure, run `/init` inside Claude Code to generate a local `CLAUDE.md`. This file
+is gitignored intentionally — the skill commands are self-contained and end users do
+not need it.
+
+---
+
 ## Using with Claude Code
 
 If you cloned this repository, the commands are already available — Claude Code picks

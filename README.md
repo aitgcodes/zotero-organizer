@@ -7,7 +7,7 @@ an optional enhancement.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **Full user manual** (step-by-step installation, usage guide, troubleshooting):
-> [docs/manual.md](docs/manual.md)
+> [docs/manual.md](docs/manual.md) · [PDF](docs/manual.pdf)
 
 ---
 

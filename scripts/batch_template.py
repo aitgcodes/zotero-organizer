@@ -345,6 +345,10 @@ async def process_book(rel_file, item_type, title, first, last, year, extra, col
                                      zot_tag(item_key, [GLOBAL_TAG]+tags), return_exceptions=True)
                 entry["item_key"] = item_key
             entry["done"] = True; STATE["papers"][key] = entry; await _save_state(STATE); return
+        if DRY_RUN:
+            await url_task  # drive_upload already prints [DRY] and returns a stub
+            print(f"  [DRY] zotero create book: {{title[:60] if title else fname}}")
+            entry["done"] = True; STATE["papers"][key] = entry; await _save_state(STATE); return
         loop = asyncio.get_event_loop()
         t = zot.item_template(item_type)
         t["title"] = title; t["date"] = year
@@ -369,6 +373,45 @@ async def process_book(rel_file, item_type, title, first, last, year, extra, col
         tasks.append(zot_tag(item_key, [GLOBAL_TAG] + tags))
         await asyncio.gather(*tasks, return_exceptions=True)
         print(f"  BOOK DONE {{item_key}}  {{fname[:40]}}")
+        entry["done"] = True; STATE["papers"][key] = entry; await _save_state(STATE)
+
+async def process_supplement(rel_file, parent_doi, coll_name, tags, drive_only=False):
+    """Upload a supplementary PDF to Drive and attach it as a child note on the parent item."""
+    key = f"supp::{{rel_file}}"
+    if STATE["papers"].get(key, {{}}).get("done"):
+        print(f"  SKIP  {{rel_file}}"); return
+    async with sem:
+        abs_path   = os.path.join(BASE, rel_file)
+        fname      = os.path.basename(abs_path)
+        drive_path = COLL_DRIVE_PATH.get(coll_name, coll_name)
+        entry      = {{}}
+        print(f"  SUPP  {{fname[:60]}}")
+        if DRY_RUN:
+            print(f"  [DRY] rclone copy {{fname}} → {{drive_path}}/")
+            print(f"  [DRY] attach to parent DOI {{parent_doi}}")
+            entry["done"] = True; STATE["papers"][key] = entry; await _save_state(STATE); return
+        try:
+            url = await drive_upload(abs_path, drive_path)
+            entry["drive_url"] = url
+        except Exception as e:
+            entry["drive_error"] = str(e); print(f"  DRIVE ERR  {{e}}")
+            STATE["papers"][key] = entry; await _save_state(STATE); return
+        parent_key = await zot_find_by_doi(parent_doi)
+        if not parent_key:
+            print(f"  SUPP WARN  parent not found for DOI {{parent_doi}} — attaching Drive URL as orphan note")
+            entry["warning"] = "parent not found"
+        else:
+            await zot_attach_url(parent_key, url, fname)
+            if tags:
+                loop = asyncio.get_event_loop()
+                att_items = await loop.run_in_executor(
+                    None, lambda: zot.everything(zot.children(parent_key))
+                )
+                att_key = next((i["key"] for i in att_items if i["data"].get("url") == url), None)
+                if att_key:
+                    await zot_tag(att_key, [GLOBAL_TAG] + tags)
+            entry["parent_key"] = parent_key
+            print(f"  SUPP DONE  attached to {{parent_key}}  {{fname[:35]}}")
         entry["done"] = True; STATE["papers"][key] = entry; await _save_state(STATE)
 
 # ── Drive pre-flight check ────────────────────────────────────────────────────
@@ -421,9 +464,10 @@ async def _preflight_drive_check():
         sys.exit("Aborted.")
 
 # ── Manifests (generated) ──────────────────────────────────────────────────────
-PAPERS  = {papers!r}
-FLAGGED = {flagged!r}
-BOOKS   = {books!r}
+PAPERS      = {papers!r}
+FLAGGED     = {flagged!r}
+BOOKS       = {books!r}
+SUPPLEMENTS = {supplements!r}
 
 # ── Collection creation order (generated) ─────────────────────────────────────
 COLLECTION_ORDER = {collection_order!r}
@@ -471,10 +515,13 @@ async def main(drive_only=False, dry_run=False):
         process_book(rel, itype, title, first, last, year, extra, coll, tags, drive_only=drive_only)
         for rel, itype, title, first, last, year, extra, coll, tags in BOOKS
     ])
+    print(f"\\n=== STEP 5: {{len(SUPPLEMENTS)}} supplementary files ===")
+    for rel, parent_doi, coll, tags in SUPPLEMENTS:
+        await process_supplement(rel, parent_doi, coll, tags, drive_only=drive_only)
     done    = sum(1 for v in STATE["papers"].values() if v.get("done"))
     errors  = [k for k, v in STATE["papers"].items() if not v.get("done")]
     elapsed = time.monotonic() - t0
-    total   = len(PAPERS) + len(FLAGGED) + len(BOOKS)
+    total   = len(PAPERS) + len(FLAGGED) + len(BOOKS) + len(SUPPLEMENTS)
     print(f"\\n=== DONE: {{done}}/{{total}} in {{elapsed:.0f}}s ===")
     if errors:
         print(f"Errors ({{len(errors)}}):")

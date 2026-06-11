@@ -47,6 +47,8 @@ def extract_doi(pdf_path: str, use_ss: bool) -> dict:
         meta = {}
     for key in ("/doi", "/DOI", "/Subject", "/subject"):
         raw = meta.get(key, "") or ""
+        if not isinstance(raw, str):
+            raw = str(raw)
         m = _DOI_RE.search(raw)
         if m:
             result["doi"] = m.group(0)
@@ -256,6 +258,7 @@ def main():
         "papers":          papers,
     }
 
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(scan, f, indent=2, ensure_ascii=False)
     print(f"\nScan complete. {len(papers)} files → {output_path}")

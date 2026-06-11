@@ -216,7 +216,7 @@ def build_manifests_from_scan(scan: dict):
 
 def build_manifests_from_taxonomy(taxonomy: dict, scan: dict):
     """Taxonomy mode: merge DOIs from scan into taxonomy assignments."""
-    papers_list, flagged_list, books_list = [], [], []
+    papers_list, flagged_list, books_list, supplements_list = [], [], [], []
     scan_papers = scan["papers"]
 
     for rel, info in (taxonomy.get("assignments") or {}).items():
@@ -252,7 +252,15 @@ def build_manifests_from_taxonomy(taxonomy: dict, scan: dict):
             b.get("tags") or [],
         ))
 
-    return papers_list, flagged_list, books_list
+    for s in (taxonomy.get("supplements") or []):
+        supplements_list.append((
+            s["file"],
+            s["parent_doi"],
+            s["collection"],
+            s.get("tags") or [],
+        ))
+
+    return papers_list, flagged_list, books_list, supplements_list
 
 
 def build_collections_from_scan(scan: dict):
@@ -267,7 +275,7 @@ def render_batch(
     state_file: str,
     collection_name: str,
     collections: list[dict],
-    papers: list, flagged: list, books: list,
+    papers: list, flagged: list, books: list, supplements: list,
     scan_path: str = "",
 ) -> str:
     env_path         = str(Path(__file__).parent.parent / ".env")
@@ -286,6 +294,7 @@ def render_batch(
         papers           = papers,
         flagged          = flagged,
         books            = books,
+        supplements      = supplements,
         collection_order = collection_order,
     )
 
@@ -298,19 +307,20 @@ def run_generate(scan: dict, taxonomy: dict | None, output: Path, mode: str):
 
     if mode == "auto":
         papers, flagged, books = build_manifests_from_scan(scan)
+        supplements = []
         _, collections, _ = build_collections_from_scan(scan)
     else:
-        papers, flagged, books = build_manifests_from_taxonomy(taxonomy, scan)
+        papers, flagged, books, supplements = build_manifests_from_taxonomy(taxonomy, scan)
         collections = taxonomy.get("collections") or []
 
     code = render_batch(base, state_file, collection_name, collections,
-                        papers, flagged, books, scan_path)
+                        papers, flagged, books, supplements, scan_path)
 
     with open(output, "w", encoding="utf-8") as f:
         f.write(code)
     os.chmod(output, 0o755)
     print(f"Batch script written → {output}")
-    print(f"  {len(papers)} papers  |  {len(flagged)} flagged  |  {len(books)} books/notes")
+    print(f"  {len(papers)} papers  |  {len(flagged)} flagged  |  {len(books)} books/notes  |  {len(supplements)} supplements")
     print(f"\nRun with:")
     print(f"  python {output}")
     print(f"  python {output} --mode drive-only")
